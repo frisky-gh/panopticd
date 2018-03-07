@@ -1,0 +1,7 @@
+
+generate_pattern
+	if_samplelogname_matches	.*
+	patternname			%{samplelogname}
+
+	replace	\d{2,}			\d{2,}
+	replace	(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\x20\d{2}\x20\d{2}:\d{2}:\d{2}\x20[-\w]{2,24}	(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\x20\d{2}\x20\d{2}:\d{2}:\d{2}\x20[-\w]{2,24}

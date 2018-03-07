@@ -1,0 +1,646 @@
+#!/usr/bin/perl
+
+use strict;
+use Regexp::Assemble;
+use FindBin::libs;
+use PanopticCommon;
+
+$0 =~ m"^(.*/)[^/]+$";
+our $BASEDIR = "$1/..";
+
+our $CONFDIR = "$BASEDIR/conf";
+our $PATTERNDIR = "$BASEDIR/conf/pattern";
+
+if( @ARGV < 1 ){
+	print "usage: % $0 build\n";
+	print "           or\n";
+	print "       % $0 clean\n";
+	print "           or\n";
+	print "       % $0 test RULENAME < input\n";
+	exit 1;
+}
+
+####
+sub write_patternset ($$) {
+	my ($patternsetname, $patternset) = @_;
+	my $type = $patternset->{'type'};
+	my $re   = $patternset->{'re'};
+	my $attr = $patternset->{'attr'};
+	my $attr_ltsv = hash2ltsv( $attr );
+	open W, '>', "$PATTERNDIR/$patternsetname.patternset" or die;
+	print W "type	$type\n";
+	print W "re	$re\n";
+	print W "attr	$attr_ltsv\n";
+	if    ( $type eq 'simple' ){
+		my $include_patternfiles = $patternset->{'include_patternfiles'};
+		print W "include_patternfiles	", join("\t", @$include_patternfiles), "\n";
+	}elsif( $type eq 'single_matchable' or $type eq 'multi_matchable' ){
+		my $subpatternset_names = $patternset->{'subpatternset_names'};
+		print W "subpatternset_names	", join("\t", @$subpatternset_names), "\n";
+		my $n = 0;
+		foreach my $a ( @{ $patternset->{'subpatternset_attrs'} } ){
+			my $a_ltsv = hash2ltsv( $a );
+			print W "subpatternset_attrs	$n	$a_ltsv\n";
+			$n++;
+		}
+	}else{
+		die;
+	}
+	close W;
+}
+
+####
+sub context_is_valid ($$$$) {
+        my ($context, $available_context, $location, $arg) = @_;
+        foreach my $a (@{$available_context}){
+                return 1 if $context eq $a;
+        }
+        print STDERR "$location:$arg: not allowed by context.\n";
+        return undef;
+}
+
+sub lastrule_is_valid ($$) {
+        my ($lastrule, $location) = @_;
+        return 1 unless defined $lastrule;
+	if    ( $lastrule->{'type'} eq 'generate_pattern' ){
+        	print STDERR "$location: need patternname clause.\n" and
+        	return undef unless defined $lastrule->{'patternname'};
+	}elsif( $lastrule->{'type'} eq 'generate_pattern' ){
+	}elsif( $lastrule->{'type'} eq 'simple' ){
+        	print STDERR "$location: need patternsetname clause.\n" and
+        	return undef unless defined $lastrule->{'patternsetname'};
+	}elsif( $lastrule->{'type'} eq 'undefined_complex' ){
+        	print STDERR "$location: put single_matchable or multi_matchable.\n";
+	}elsif( $lastrule->{'type'} eq 'single_matchable' ){
+        	print STDERR "$location: need patternsetname clause.\n" and
+        	return undef unless defined $lastrule->{'patternsetname'};
+	}elsif( $lastrule->{'type'} eq 'multi_matchable' ){
+        	print STDERR "$location: need patternsetname clause.\n" and
+        	return undef unless defined $lastrule->{'patternsetname'};
+	}elsif( $lastrule->{'type'} eq 'patternset' ){
+	}else{
+		die;
+	}
+        return 1;
+}
+
+sub read_generate_pattern_conf {
+	my @generate_pattern_rule;
+	my @pattern_rule;
+	my $context;
+	my $last;
+	my $error_occurred;
+	open F, '<', "$CONFDIR/generate_pattern.conf" or die;
+	my $confname = "generate_pattern.conf";
+	while( <F> ){
+		chomp;
+		s{^\s*}{}g;
+		next if m{^$};
+		next if m{^#};
+		my @c = split m{\s+};
+
+#print STDERR "DEBUG2: @c\n";
+		if   ( $c[0] eq 'generate_pattern' ){
+			$error_occurred = 1 unless lastrule_is_valid(
+				$last, "$confname:$."
+			);
+			$last = {
+				'type' => 'generate_pattern',
+				'if_samplelogname_matches' => [ qr"." ],
+				'patternname' => '%{filename}',
+				'capture_from_logname' => [],
+				'replace' => [],
+			};
+			$context = 'generate';
+			push @generate_pattern_rule, $last;
+		}elsif( $c[0] eq 'if_samplelogname_matches' ){
+			next unless context_is_valid(
+				$context, ['generate'],
+                                "$confname:$.", $c[0],
+                        );
+			my $re = $c[1];
+			push @{$last->{'if_samplelogname_matches'}}, qr"^$re$";
+		}elsif( $c[0] eq 'patternname' ){
+			next unless context_is_valid(
+				$context, ['generate'],
+                                "$confname:$.", $c[0],
+                        );
+			$last->{'patternname'} = $c[1];
+		}elsif( $c[0] eq 'capture_from_samplelogname' ){
+			next unless context_is_valid(
+				$context, ['generate'],
+                                "$confname:$.", $c[0],
+                        );
+			my $attrname = $c[1];
+			my $re = $c[2];
+			push @{$last->{'capture_from_samplelogname'}}, [ $attrname => qr"^$re$" ];
+		}elsif( $c[0] eq 'replace' ){
+			next unless context_is_valid(
+				$context, ['generate'],
+                                "$confname:$.", $c[0],
+                        );
+			my $re = $c[1];
+			my $replace = $c[2];
+			push @{$last->{'replace'}}, [$re, $replace];
+			push @{$last->{'replace_dst'}}, $replace;
+		}elsif( $c[0] eq 'pattern' ){
+			$error_occurred = 1 unless lastrule_is_valid(
+				$last, "$confname:$."
+			);
+			$last = {
+				'type' => 'pattern',
+				'if_patternname_matches' => [ qr"." ],
+				'capture_from_patternname' => [],
+				'set' => [],
+			};
+			$context = 'pattern';
+			push @pattern_rule, $last;
+		}elsif( $c[0] eq 'if_patternname_matches' ){
+			next unless context_is_valid(
+				$context, ['pattern'],
+                                "$confname:$.", $c[0],
+                        );
+			my $re = $c[1];
+			push @{$last->{'if_patternname_matches'}}, qr"^$re$";
+		}elsif( $c[0] eq 'capture_from_patternname' ){
+			next unless context_is_valid(
+				$context, ['pattern'],
+                                "$confname:$.", $c[0],
+                        );
+			my $attrname = $c[1];
+			my $re = $c[2];
+			push @{$last->{'capture_from_patternname'}}, [ $attrname => qr"^$re$" ];
+		}elsif( $c[0] eq 'set' ){
+			next unless context_is_valid(
+				$context, ['pattern'],
+                                "$confname:$.", $c[0],
+                        );
+			my $attrname = $c[1];
+			my $attrvalue = $c[2];
+			push @{$last->{'set'}}, [ $attrname, $attrvalue ];
+		}else{
+			print STDERR "$confname:$.: ", $c[0], ": syntax error.\n";
+			next;
+		}
+	}
+	close F;
+
+	return {
+		'generate_pattern_rule' => \@generate_pattern_rule,
+		'pattern_rule' => \@pattern_rule,
+	};
+}
+
+sub generate_pattern {
+	my $conf = read_generate_pattern_conf();
+	my %pattern;
+	opendir D, $PATTERNDIR or die;
+	while( my $f = readdir D ){
+		next if $f =~ m{^\.};
+		next unless $f =~ m{^(.*)\.samplelog$};
+		my $name = $1;
+#print STDERR "DEBUG: $f\n";
+
+		my %attr = (
+			'samplelogname' => $name,
+		);
+		my %replace_match;
+		my %replace_subst;
+		OUTSIDE:
+		foreach my $rule ( @{$conf->{'generate_pattern_rule'}} ){
+print STDERR "DEBUG1: $name\n";
+
+			# 
+			foreach my $re ( @{$rule->{'if_samplelogname_matches'}} ){
+				next OUTSIDE unless $name =~ m"$re";
+			}
+
+			# capture attributes from samplelogname
+			foreach my $entry ( @{$rule->{'capture_from_samplelogname'}} ){
+				my ($attrname, $re) = @$entry;
+				next unless $name =~ m"$re";
+				$attr{$attrname} = $1;
+			}
+
+			# pattern name
+			my $patternname = template( $rule->{'patternname'}, \%attr );
+
+			# match
+			foreach my $replace ( @{$rule->{'replace'}} ){
+				$replace_match{$patternname} = [] unless $replace_match{$patternname};
+				my $mark = int(@{$replace_match{$patternname}}) . "_HIT";
+				my ($match, $subst) = @$replace;
+				push @{$replace_match{$patternname}}, "$match(*MARK:$mark)";
+				push @{$replace_subst{$patternname}}, $subst;
+			}
+		}
+
+		foreach my $patternname ( keys %replace_match ){
+			my $match_concat = join('|', @{$replace_match{$patternname}});
+			my $match = qr"(?:$match_concat)";
+
+print STDERR "DEBUG2: -> $patternname\n";
+			open F, '<', "$PATTERNDIR/$f" or die;
+			while( <F> ){
+				my $pattern_entry;
+				while( m"$match"p ){
+					$pattern_entry .= quotemeta ${^PREMATCH};
+					$pattern_entry .= $replace_subst{$patternname}->[ $::REGMARK ];
+					$_ = ${^POSTMATCH};
+				}
+				$pattern_entry .= quotemeta $_;
+				$pattern{$patternname} .= $pattern_entry;
+			}
+			close F;
+		}
+	}
+	closedir D;
+	foreach my $patternname ( keys %pattern ){
+		open W, '>', "$PATTERNDIR/$patternname.generatedpattern" or die;
+		print W $pattern{$patternname};
+		close W;
+	}
+}
+
+####
+sub read_build_patternset_conf {
+	my @simple_patternset_rule;
+	my @complex_patternset_rule;
+	my @patternset_rule;
+	my $last;
+	my $context;
+	my $error_occurred;
+	open F, '<', "$CONFDIR/build_patternset.conf" or die;
+	my $confname = "build_patternset.conf";
+	while( <F> ){
+		chomp;
+		s{^\s*}{}g;
+		next if m{^$};
+		next if m{^#};
+		my @c = split m{\s+};
+
+		if   ( $c[0] eq 'build_from_pattern' ){
+			$error_occurred = 1 unless lastrule_is_valid(
+				$last, "$confname:$."
+			);
+			$last = {
+				'type' => 'simple',
+				'if_patternname_matches' => [ qr"." ],
+				'patternsetname' => '%{patternname}',
+				'capture_from_patternname' => [],
+			};
+			$context = 'simple';
+			push @simple_patternset_rule, $last;
+		}elsif( $c[0] eq 'if_patternname_matches' ){
+			next unless context_is_valid(
+				$context, ['simple', 'complex'],
+                                "$confname:$.", $c[0],
+                        );
+			my $re = $c[1];
+			push @{$last->{'if_patternname_matches'}}, qr"^$re$";
+		}elsif( $c[0] eq 'patternsetname' ){
+			next unless context_is_valid(
+				$context, ['simple', 'complex'],
+                                "$confname:$.", $c[0],
+                        );
+			$last->{'patternsetname'} = $c[1];
+		}elsif( $c[0] eq 'capture_from_patternname' ){
+			next unless context_is_valid(
+				$context, ['simple'],
+                                "$confname:$.", $c[0],
+                        );
+			my $attrname = $c[1];
+			my $re = $c[2];
+			push @{$last->{'capture_from_patternname'}}, [ $attrname => qr"$re" ];
+		}elsif( $c[0] eq 'build_from_patternset' ){
+			$error_occurred = 1 unless lastrule_is_valid(
+				$last, "$confname:$."
+			);
+			$last = {
+				'type' => 'undefined_complex',
+				'if_simple_patternsetname_match' => [ qr"." ],
+				'capture_from_patternsetname' => [],
+				'patternsetname' => '%{patternsetname}',
+			};
+			$context = 'complex';
+			push @complex_patternset_rule, $last;
+		}elsif( $c[0] eq 'single_matchable' ){
+			next unless context_is_valid(
+				$context, ['complex'],
+                                "$confname:$.", $c[0],
+                        );
+			$last->{'type'} = 'single_matchable';
+		}elsif( $c[0] eq 'multi_matchable' ){
+			next unless context_is_valid(
+				$context, ['complex'],
+                                "$confname:$.", $c[0],
+                        );
+			$last->{'type'} = 'multi_matchable';
+		}elsif( $c[0] eq 'if_simple_patternsetname_match' ){
+			next unless context_is_valid(
+				$context, ['complex'],
+                                "$confname:$.", $c[0],
+                        );
+			my $re = $c[1];
+			push @{$last->{'if_simple_patternsetname_match'}}, qr"^$re$";
+		}elsif( $c[0] eq 'capture_from_patternsetname' ){
+			next unless context_is_valid(
+				$context, ['simple', 'complex', 'patternset'],
+                                "$confname:$.", $c[0],
+                        );
+			my $attrname = $c[1];
+			my $re = $c[2];
+			push @{$last->{'capture_from_patternsetname'}}, [ $attrname => qr"$re" ];
+		}elsif( $c[0] eq 'patternset' ){
+			$error_occurred = 1 unless lastrule_is_valid(
+				$last, "$confname:$."
+			);
+			$last = {
+				'type' => 'patternset',
+				'if_patternsetname_matches' => [ qr"." ],
+				'capture_from_patternsetname' => [],
+				'set' => [],
+			};
+			$context = 'patternset';
+			push @patternset_rule, $last;
+		}elsif( $c[0] eq 'if_patternsetname_matches' ){
+			next unless context_is_valid(
+				$context, ['patternset'],
+                                "$confname:$.", $c[0],
+                        );
+			my $re = $c[1];
+			push @{$last->{'if_patternsetname_match'}}, qr"^$re$";
+		}elsif( $c[0] eq 'set' ){
+			next unless context_is_valid(
+				$context, ['patternset'],
+                                "$confname:$.", $c[0],
+                        );
+			my $attrname = $c[1];
+			my $attrvalue = $c[2];
+			push @{$last->{'set'}}, [ $attrname => $attrvalue ];
+		}elsif( $c[0] eq 'eventname' ){
+			next unless context_is_valid(
+				$context, ['patternset'],
+                                "$confname:$.", $c[0],
+                        );
+			my $eventname = $c[1];
+			push @{$last->{'set'}}, [ 'eventname' => $eventname ];
+		}else{
+			print STDERR "$confname:$.: ", $c[0], ": syntax error.\n";
+			next;
+		}
+	}
+	close F;
+	return {
+		'simple_patternset_rule' => \@simple_patternset_rule,
+		'complex_patternset_rule' => \@complex_patternset_rule,
+		'patternset_rule' => \@patternset_rule,
+	};
+}
+
+sub build_patternset {
+	my $conf = read_build_patternset_conf();
+	my %simple_patternset_entity;
+	my %complex_patternset_entity;
+
+	# simple patternset aggregation
+	opendir D, $PATTERNDIR or die;
+	while( my $f = readdir D ){
+		next if $f =~ m{^\.};
+		next unless $f =~ m{^(.*)\.(pattern|generatedpattern)$};
+		my $name = $1;
+#print STDERR "DEBUG3: $f\n";
+
+		my %aggregate_time_attr = (
+			'filename' => $f,
+			'patternname' => $name,
+		);
+		OUTSIDE:
+		foreach my $rule ( @{$conf->{'simple_patternset_rule'}} ){
+			# 
+			foreach my $re ( @{$rule->{'if_patternname_matches'}} ){
+				next OUTSIDE unless $f =~ m"$re";
+			}
+#print STDERR "DEBUG3: rule: $rule\n";
+
+			# capture attributes from patternname
+			foreach my $entry ( @{$rule->{'capture_from_patternname'}} ){
+				my ($attrname, $re) = @$entry;
+#print STDERR "DEBUG3: $attrname, $re\n";
+				next unless $f =~ m"$re";
+				$aggregate_time_attr{$attrname} = $1;
+			}
+
+			# decide patternset name
+			my $patternsetname = template( $rule->{'patternsetname'}, \%aggregate_time_attr );
+
+			# initialize patternset entity
+			unless( exists $simple_patternset_entity{$patternsetname} ){
+				$simple_patternset_entity{$patternsetname} = {
+					'type' => $rule->{'type'},
+					'attr' => undef,
+					're' => undef,
+				};
+			}
+			my $pe = $simple_patternset_entity{$patternsetname};
+			my $type = $pe->{'type'};
+			unless( $type eq $rule->{'type'} ){
+				print STDERR "$patternsetname: duplicated patternset name.";
+				next;
+			}
+
+			# include pattern
+			push @{$pe->{'include_patternfiles'}}, $f;
+		}
+	}
+	closedir D;
+	# simple patternset setup
+	while( my ($patternsetname, $pe) = each %simple_patternset_entity ){
+		# setup regular expression
+		my $patternfiles = $pe->{'include_patternfiles'};
+		my $ra = Regexp::Assemble->new;
+		foreach my $patternfile ( @$patternfiles ){
+			open F, '<', "$PATTERNDIR/$patternfile" or die;
+			while( <F> ){
+				chomp;
+#print STDERR "DEBUG3: $_\n";
+				$ra->add( $_ );
+			}
+			close F;
+		}
+		$pe->{'re'} = $ra->re;
+
+		# setup attribute
+		my %entity_attr = (
+			'eventname' => $patternsetname,
+		);
+		OUTSIDE:
+		foreach my $rule ( @{$conf->{'patternset_rule'}} ){
+			# 
+			foreach my $re ( @{$rule->{'if_patternsetname_matches'}} ){
+				next OUTSIDE unless $patternsetname =~ m"$re";
+			}
+
+			# capture attributes from patternsetname
+			foreach my $entry ( @{$rule->{'capture_from_patternsetname'}} ){
+				my ($attrname, $re) = @$entry;
+				next unless $patternsetname =~ m"$re";
+				$entity_attr{$attrname} = $1;
+			}
+
+			# set attributes
+			foreach my $entry ( @{$rule->{'set'}} ){
+				my ($attrname, $attrvalue) = @$entry;
+				$entity_attr{$attrname} = template($attrvalue, \%entity_attr);
+			}
+		}
+		$pe->{'attr'} = \%entity_attr;
+
+		write_patternset( $patternsetname, $pe );
+	}
+
+	# complex patternset aggregation
+	foreach my $subname ( keys %simple_patternset_entity ){
+		my %aggregate_time_attr = (
+			'patternsetname' => $subname,
+		);
+		OUTSIDE:
+		foreach my $rule ( @{$conf->{'complex_patternset_rule'}} ){
+			# 
+			foreach my $re ( @{$rule->{'if_simple_patternsetname_match'}} ){
+				next OUTSIDE unless $subname =~ m"$re";
+			}
+
+			# capture attributes from patternname
+			foreach my $entry ( @{$rule->{'capture_from_patternsetname'}} ){
+				my ($attrname, $re) = @$entry;
+#print STDERR "DEBUG3: $attrname, $re\n";
+				next unless $subname =~ m"$re";
+				$aggregate_time_attr{$attrname} = $1;
+			}
+
+			# decide patternset name
+			my $patternsetname = template( $rule->{'patternsetname'}, \%aggregate_time_attr );
+
+			# initialize patternset
+			if( $simple_patternset_entity{$patternsetname} ){
+				print STDERR "$patternsetname: duplicated patternset name.";
+				next;
+			}
+			unless( exists $complex_patternset_entity{$patternsetname} ){
+				$complex_patternset_entity{$patternsetname} = {
+					'type' => $rule->{'type'},
+					'attr' => undef,
+					're' => undef,
+					'subpatternset_names' => [],
+					'subpatternset_attrs' => [],
+					'subpatternset_res' => [],
+				};
+			}
+			my $pe = $complex_patternset_entity{$patternsetname};
+			my $type = $pe->{'type'};
+			unless( $type eq $rule->{'type'} ){
+				print STDERR "$patternsetname: duplicated patternset name.";
+				next;
+			}
+
+			# sub patternset
+			push @{$pe->{'subpatternset_names'}}, $subname;
+
+			# regular expressions
+			my $subpe = $simple_patternset_entity{$subname};
+			my $subre = $subpe->{'re'};
+			my %subattr = %{$subpe->{'attr'}};
+			push @{$pe->{'subpatternset_res'}}, $subre;
+			push @{$pe->{'subpatternset_attrs'}}, \%subattr;
+		}
+	}
+	# complex patternset setup
+	while( my ($patternsetname, $pe) = each %complex_patternset_entity ){
+		# setup regular expression
+		my $res;
+		my $type = $pe->{'type'};
+		if( $type eq 'single_matchable' ){
+			my @res;
+			my $n = 0;
+			foreach my $re ( @{ $pe->{'subpatternset_res'} } ){
+				push @res, "$re$(?{push \@m, $n;})";
+				$n++;
+			}
+			$res = '^' . join('|', @res);
+		}elsif( $type eq 'multi_matchable' ){
+			my @res;
+			my $n = 0;
+			foreach my $re ( @{ $pe->{'subpatternset_re'} } ){
+				push @res, "$re$(?{push \@m, $n;})";
+				$n++;
+			}
+			$res = '^' . join('|', @res) . '(*FAIL)';
+		}else{
+			die;
+		}
+		$pe->{'re'} = qr"^$res";
+
+		# setup entity attribute
+		my %entity_attr = (
+			'eventname' => $patternsetname,
+		);
+		OUTSIDE:
+		foreach my $rule ( @{$conf->{'attribute_rule'}} ){
+			# 
+			foreach my $re ( @{$rule->{'if_patternsetname_match'}} ){
+				next OUTSIDE unless $patternsetname =~ m"$re";
+			}
+
+			# capture attributes from patternsetname
+			foreach my $entry ( @{$rule->{'capture_from_patternsetname'}} ){
+				my ($attrname, $re) = @$entry;
+				next unless $patternsetname =~ m"$re";
+				$entity_attr{$attrname} = $1;
+			}
+
+			# set attributes
+			foreach my $entry ( @{$rule->{'set'}} ){
+				my ($attrname, $attrvalue) = @$entry;
+				$entity_attr{$attrname} = template($attrvalue, \%entity_attr);
+			}
+		}
+		while( my ($k, $v) = each %entity_attr ){
+			foreach my $subattr ( @{$pe->{'subpatternset_attrs'}} ){
+				$subattr->{$k} = $v;
+			}
+		}
+		$pe->{'attr'} = \%entity_attr;
+
+		#
+		write_patternset( $patternsetname, $pe );
+	}
+
+}
+
+####
+sub build {
+	generate_pattern();
+	build_patternset();
+}
+
+sub clean {
+	die;
+}
+
+sub test {
+	die;
+}
+
+####
+if    ( $ARGV[0] eq 'build' ){
+	build();
+}elsif( $ARGV[0] eq 'clean' ){
+	clean();
+}elsif( $ARGV[0] eq 'test' ){
+	test();
+}else{
+	die;
+}
+
+

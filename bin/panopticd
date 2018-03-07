@@ -1,0 +1,207 @@
+#!/usr/bin/perl
+
+use strict;
+use FindBin::libs;
+use PanopticCommon;
+
+$0 =~ m"^(.*)/[^/]+$";
+our $BASEDIR = "$1/..";
+
+our $LIBDIR = "$BASEDIR/lib";
+our $LOGDIR = "$BASEDIR/log";
+our $CONFDIR = "$BASEDIR/conf";
+our $RUNDIR = "$BASEDIR/run";
+our $DIFFDIR = "$BASEDIR/spool/diff";
+our $EVENTDIR = "$BASEDIR/spool/event";
+our $POSTDIR = "$BASEDIR/spool/post";
+our $DEBUG = 1;
+
+if( @ARGV < 1 ){
+	print "usage: % $0 {start|stop|oneshot}\n";
+	exit 1;
+}
+
+sub start_daemon {
+}
+
+sub stop_daemon {
+}
+
+####
+sub read_panopticd_conf {
+	open F, '<', "$CONFDIR/panopticd.conf" or die;
+	my @rule;
+	my $lastrule;
+	my $lastdetect;
+	while( <F> ){
+		chomp;
+		s{^\s*}{};
+		next if m"^$";
+		next if m"^#";
+		my @c = split m"\s+";
+		if( $c[0] eq "check_interval_minutes" ){
+			$lastrule = {
+			};
+			push @rule, $lastrule;
+		}elsif(	$c[0] eq "default" ){
+			my $priority = $c[1];
+			$lastdetect = {
+				'action' => 'default',
+				'default_priority' => $priority,
+			};
+			push @{ $lastrule->{'detect'} }, $lastdetect;
+		}
+	}
+	close F;
+
+	return \@rule;
+}
+
+####
+sub mark_as_done ($) {
+	my ( $src ) = @_;
+	my $dstbase = $src;
+	$dstbase =~ s/\.([^\.]*)$//;
+
+	rename $src, "$dstbase.done" and return 1;
+	panopticdlog "%s: cannot rename.", "$dstbase.done";
+
+	foreach my $i ( 1..99 ){
+		rename $src, "$dstbase.$i.done" and return 1;
+		panopticdlog "%s: cannot rename.", "$dstbase.$i.done";
+	}
+	die;
+}
+
+sub exec_select ($) {
+	my ( $timestamp ) = @_;
+	my $outfile = "$DIFFDIR/diff_$timestamp.diff";
+	my ($rc, $err) = execcmd( ["$LIBDIR/select.pl"], undef, $outfile );
+	if( $rc ){
+		panopticdlog "select.pl: rc=%d", $rc;
+	}
+	if( $err ){
+		panopticdlog "select.pl: err=%s", $err;
+	}
+	unlink $outfile unless -s $outfile;
+}
+
+sub exec_detect ($) {
+	my ( $timestamp ) = @_;
+	my @diffs;
+	my $outfile = "$EVENTDIR/event_$timestamp.event";
+	opendir D, $DIFFDIR or die;
+	while( readdir D ){
+		next if m"^\.";
+		next unless m"\.diff$";
+		push @diffs, "$DIFFDIR/$_";
+	}
+	foreach( @diffs ){
+		my ($rc, $err) = execcmd( ["$LIBDIR/detect.pl"], $_, $outfile );
+		mark_as_done $_;
+		if( $rc ){
+			panopticdlog "detect.pl: rc=%d", $rc;
+		}
+		if( $err ){
+			panopticdlog "detect.pl: err=%s", $err;
+		}
+	}
+	unlink $outfile unless -s $outfile;
+}
+
+sub exec_delivery ($) {
+	my ( $timestamp ) = @_;
+	my @events;
+	opendir D, $EVENTDIR or die;
+	while( readdir D ){
+		next if m"^\.";
+		next unless m"\.event$";
+		push @events, "$EVENTDIR/$_";
+	}
+	foreach( @events ){
+		my ($rc, $err) = execcmd( ["$LIBDIR/delivery.pl"], $_, undef );
+		mark_as_done $_;
+		if( $rc ){
+			panopticdlog "delivery.pl: rc=%d", $rc;
+		}
+		if( $err ){
+			panopticdlog "delivery.pl: err=%s", $err;
+		}
+	}
+}
+
+sub exec_post ($) {
+	my ( $timestamp ) = @_;
+	my @envelopes;
+	opendir D, $POSTDIR or die;
+	while( readdir D ){
+		next if m"^\.";
+		next unless m"\.envelope$";
+		push @envelopes, "$POSTDIR/$_";
+	}
+	foreach( @envelopes ){
+		my ($rc, $err) = execcmd( ["$LIBDIR/post.pl"], $_, undef );
+		mark_as_done $_;
+		if( $rc ){
+			panopticdlog "delivery.pl: rc=%d", $rc;
+		}
+		if( $err ){
+			panopticdlog "delivery.pl: err=%s", $err;
+		}
+	}
+}
+
+sub cleanup () {
+	die;
+}
+
+####
+sub daemonize {
+	my $pid = fork;
+	if( $pid ){
+		$::SIG{'USR1'} = sub {
+			open F, '>', "$RUNDIR/panopticd.pid" or die;
+			print F "$pid\n";
+			close F;
+			exit 0;
+		};
+		sleep 5;
+		exit 1;
+	}else{
+		my $ppid = getppid;
+		open STDIN,  '<', '/dev/null' or die;
+		open STDOUT, '>', '/dev/null' or die;
+		open STDERR, '>', '/dev/null' or die;
+		setpgrp 0, 0;
+		kill 'USR1', $ppid or die;
+	}
+}
+
+sub now () {
+	my ($sec, $min, $hour, $day, $mon, $year) = localtime;
+	return sprintf "%04d-%02d-%02d_%02d:%02d:%02d", $year+1900, $mon+1, $day, $hour, $min, $sec;
+}
+
+####
+sub loop {
+	while(1){
+		oneshot();
+		sleep 60;
+	}
+}
+
+sub oneshot {
+	my $timestamp = timestamp();
+	exec_select( $timestamp );
+	exec_detect( $timestamp );
+	exec_delivery( $timestamp );
+	exec_post( $timestamp );
+}
+
+
+####
+if( $ARGV[0] eq 'oneshot' ){
+	oneshot();
+}else{
+	die "not implemented, stopped";
+}

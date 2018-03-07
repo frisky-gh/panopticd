@@ -1,0 +1,18 @@
+
+detection
+
+	if_logname_matches	syslog.*
+	
+	capture_from_logname	hostname	.*\.([-a-zA-Z0-9]{2,16})\..*
+	capture_from_message	timestamp	(.........:..:..)..*
+	capture_from_message	hostname	.........:..:...([-a-zA-Z0-9]{2,16})..*
+
+	ignore
+		patternset 	syslog-wellknown
+
+	default	
+		eventname	syslog-anomaly
+		set	priority	alert
+
+
+

@@ -1,0 +1,12 @@
+
+build_from_pattern
+	if_patternname_matches		[-\w]+\..*
+
+	capture_from_patternname	basename	([-\w]+)\..*
+	patternsetname			%{basename}
+
+patternset
+	capture_from_patternsetname	eventname	(.*)
+	set				owner		frisky
+
+	

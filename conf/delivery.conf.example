@@ -1,0 +1,37 @@
+
+delivery_by_mail
+	if_eventname_matches	.*
+	if_priority_matches 	alert
+	if	%{hostname}	matches	(foo|bar|baz)
+
+	envelopename		%{priority}-myhosts
+
+envelope
+	if_envelopename_matches	critical-.*
+	send_wait_minutes	0
+	resend_wait_minutes	20
+	
+envelope
+	if_envelopename_matches	alert-.*
+	send_wait_minutes	20
+	resend_wait_minutes	40
+	
+envelope
+	if_envelopename_matches	daily-.*
+	sending_time_of_day	09:00
+	
+envelope
+	if_envelopename_matches	weekly-.*
+	sending_day_of_week	Monday
+	sending_time_of_day	09:00
+
+envelope
+	if_envelopename_matches	\w+-\w+
+	capture_from_envelopename	priority	(\w+)-\w+
+	capture_from_envelopename	systemname	\w+-(\w+)
+	recipient_address	frisky-panopticd@example.com	frisky
+	mail_template		simple_mail
+	snippet_template	simple_snippet
+	concatenate_messages_by	priority,eventname,hostname,logname
+
+
