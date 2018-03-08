@@ -1,0 +1,5 @@
+Subject: %{priority} found on %{systemname}
+From: %{sender_name} <%{sender_address}>
+To: %{recipient_name} <%{recipient_address}>
+
+%{snippets}

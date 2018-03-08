@@ -1,6 +1,8 @@
 #!/usr/bin/perl
 
 use strict;
+use FindBin::libs;
+use PanopticCommon;
 
 $0 =~ m"^(.*)/[^/]+$";
 our $BASEDIR = "$1/..";
@@ -27,12 +29,9 @@ sub read_mail_template ($) {
 sub post {
 	my @concat_attr = ('logname', 'eventname');
 
-	# TODO: configure mail sender addr
-	my $sender_addr = 'frisky-.-panopticd@watao3.info';
-	my $sender_name = 'frisky';
-
 	my $envelope_attr;
 	my $event_attr;
+	my $sender_addr;
 	my @recipient_addr;
 	my $template_param;
 	my @concat_messages;
@@ -44,8 +43,10 @@ sub post {
 				$event_attr = ltsv2hash( ${^POSTMATCH} );
 			}elsif( $1 eq 'envelope_attr' ){
 				$envelope_attr = ltsv2hash( ${^POSTMATCH} );
+			}elsif( $1 eq 'sender_addr' ){
+				$sender_addr = [split m"\t", ${^POSTMATCH}];
 			}elsif( $1 eq 'recipient_addr' ){
-				@recipient_addr = split m"\t", ${^POSTMATCH};
+				push @recipient_addr, [split m"\t", ${^POSTMATCH}];
 			}elsif( $1 eq 'template' ){
 				$template_param = ltsv2hash( ${^POSTMATCH} );
 			}elsif( $1 eq 'concat_messages' ){
@@ -102,16 +103,18 @@ sub post {
 	}
 	my $snippets = join('', @snippets);
 
-	foreach my $email ( @recipient_addr ){
+	foreach my $a ( @recipient_addr ){
 		my %mail_attr = (
 			'snippets' => $snippets,
-			'recipient_address' => $email,
-			'recipient_name' => $email,
+			'sender_address'    => $sender_addr->[0],
+			'sender_name'       => $sender_addr->[1],
+			'recipient_address' => $a->[0],
+			'recipient_name'    => $a->[1],
 		);
 		my $mail = template($mail_template, \%mail_attr, $envelope_attr);
 		# TODO: censor function. (email addr => xxx@xxx.xxx, and so on)
 
-		sendmail $mail, $sender_addr, $email;
+		sendmail $mail, $sender_addr->[0], $a->[0];
 	}
 }
 

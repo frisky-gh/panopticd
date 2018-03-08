@@ -36,18 +36,19 @@ inc/
 
 #
 /log/*
+/run/*
 /spool/**/*.done
 /spool/targetlog/*
 /spool/diff/*.diff
 /spool/event/*.event
-/spool/mailbox/*.mailbox
-/spool/sendmail/*.mailbox
+/spool/envelope/*.envelope
+/spool/sendmail/*.envelope
 /status/*
 /conf/*.conf
 /conf/pattern/*.samplelog
 /conf/pattern/*.generatedpattern
 /conf/pattern/*.pattern
 /conf/pattern/*.patternset
-/conf/mail/*.template
+# /conf/mail/*.template
 !**/.gitkeep
 

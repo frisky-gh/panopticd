@@ -2,6 +2,7 @@
 
 use strict;
 use Time::Local;
+use Sys::Hostname;
 use FindBin::libs;
 use PanopticCommon;
 
@@ -151,6 +152,7 @@ sub read_delivery_conf {
 				'capture_from_envelopename' => [],
 				'set' => [],
 				'recipient_address' => [],
+				'sender_address' => undef,
 				'send_wait_minutes' => undef,
 				'resend_wait_minutes' => undef,
 				'sending_time_of_day' => undef,
@@ -190,9 +192,18 @@ sub read_delivery_conf {
 				"$confname:$.", $c[0]
 			);
 			my $email = $c[1];
-			# TODO: configure recipient name
-			# TODO: configure sender addr and name
-			push @{$last->{'recipient_address'}}, $email;
+			my $name  = $c[2];
+			$name = $email if $name eq '';
+			push @{$last->{'recipient_address'}}, [$email, $name];
+		}elsif(	$c[0] eq 'sender_address' ){
+			next unless context_is_valid(
+				$context, ['envelope'],
+				"$confname:$.", $c[0]
+			);
+			my $email = $c[1];
+			my $name  = $c[2];
+			$name = $email if $name eq '';
+			$last->{'sender_address'} = [$email, $name];
 		}elsif(	$c[0] eq 'send_wait_minutes' ){
 			next unless context_is_valid(
 				$context, ['envelope'],
@@ -356,6 +367,9 @@ sub delivery {
 	}
 
 	# send mail
+	my $username = (getpwuid $<)[0];
+	my $hostname = hostname;
+	my @default_sender = ("$username\@hostname", $username);
 	my @post;
 	opendir D, $ENVELOPEDIR or die;
 	while( my $f = readdir D ){
@@ -369,6 +383,7 @@ sub delivery {
 		my %template_param;
 		my @concat_messages;
 		my @recipient_addr;
+		my $sender_addr = [@default_sender];
 		OUTSIDE:
 		foreach my $rule ( @{$envelope_rules} ){
 			foreach my $re ( @{$rule->{'if_envelopename_matches'}} ){
@@ -391,7 +406,18 @@ sub delivery {
 			}
 
 			foreach my $a ( @{ $rule->{'recipient_address'} } ){
-				push @recipient_addr, template( $a, \%envelope_attr );
+				push @recipient_addr, [
+					template( $a->[0], \%envelope_attr ),
+					template( $a->[1], \%envelope_attr ),
+				];
+			}
+
+			if( $rule->{'sender_address'} ){
+				my $a = $rule->{'sender_address'};
+				$sender_addr = [
+					template( $a->[0], \%envelope_attr ),
+					template( $a->[1], \%envelope_attr ),
+				];
 			}
 
 			if( $rule->{'sending_day_of_week'} or $rule->{'sending_time_of_day'} ){
@@ -459,17 +485,20 @@ print STDERR "DEBUG2-1 check last send time\n";
 print STDERR "DEBUG2-2\n";
 		}
 		
-		push @post, [$envelopename, \%envelope_attr, \@recipient_addr, \%template_param, \@concat_messages];
+		push @post, [$envelopename, \%envelope_attr, $sender_addr, \@recipient_addr, \%template_param, \@concat_messages];
 	}
 	close D;
 
 	my $now = timestamp();
 	foreach my $e ( @post ){
-		my ($envelopename, $attr, $addr, $template_param, $concat_messages) = @$e;
+		my ($envelopename, $attr, $sender_addr, $recipient_addrs, $template_param, $concat_messages) = @$e;
 
 		open F, '>>', "$ENVELOPEDIR/$envelopename.envelope" or die;
 		print F "envelope_attr\t", hash2ltsv($attr), "\n";
-		print F "recipient_addr\t", join("\t", @$addr), "\n";
+		print F "sender_addr\t", join("\t", $sender_addr->[0], $sender_addr->[1]), "\n";
+		foreach my $a ( @$recipient_addrs ){
+			print F "recipient_addr\t", join("\t", $a->[0], $a->[1]), "\n";
+		}
 		print F "template\t", hash2ltsv($template_param), "\n";
 		print F "concat_messages\t", join("\t", @$concat_messages), "\n";
 		close F;

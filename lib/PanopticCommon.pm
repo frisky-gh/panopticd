@@ -4,6 +4,7 @@ package PanopticCommon;
 use strict;
 use Exporter;
 use Encode;
+use Time::Local;
 use MIME::EncWords ':all';
 
 our @ISA = ('Exporter');
@@ -104,7 +105,7 @@ sub execcmd ($$$) {
 	}
 
 	my $child_pid = waitpid $pid, 0;
-	my $rc = $?;
+	my $rc = ($? >> 8);
 	my $err;
 	if( open F, '<', $errfile ){
 		$err = join '', <F>;
@@ -129,14 +130,12 @@ sub panopticdlog ($;@) {
 sub sendmail ($$$) {
 	my ($mail, $mailfrom, $mailto) = @_;
 	my $from_quoted = quotemeta $mailfrom;
-	my $to_quoted = quotemeta $_;
+	my $to_quoted = quotemeta $mailto;
 
-	#open E, '|-', "$SENDMAILEXE -f $from_quoted $to_quoted" or die;
-	open E, '|-', "cat" or die;
+	open E, '|-', "$SENDMAILEXE -f $from_quoted $to_quoted" or die;
 	chomp $mail;
 	my @mail = split m"\n", $mail;
 	while( $_ = shift @mail ){
-		#$_ = decode_utf8( $_ );
 		last if $_ eq '';
 
 		my $text = encode_mimewords $_;

@@ -29,6 +29,7 @@ envelope
 	if_envelopename_matches	\w+-\w+
 	capture_from_envelopename	priority	(\w+)-\w+
 	capture_from_envelopename	systemname	\w+-(\w+)
+	sender_address		panopticd@example.com		monitoring-system
 	recipient_address	frisky-panopticd@example.com	frisky
 	mail_template		simple_mail
 	snippet_template	simple_snippet

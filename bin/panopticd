@@ -21,40 +21,33 @@ if( @ARGV < 1 ){
 	exit 1;
 }
 
-sub start_daemon {
-}
-
-sub stop_daemon {
-}
-
 ####
 sub read_panopticd_conf {
 	open F, '<', "$CONFDIR/panopticd.conf" or die;
-	my @rule;
-	my $lastrule;
-	my $lastdetect;
+	my %config = (
+		'detection_interval_minutes'    => 5,
+		'cleanup_interval_minutes'      => 60,
+		'working_file_preserve_minutes' => 6000,
+	);
 	while( <F> ){
 		chomp;
 		s{^\s*}{};
 		next if m"^$";
 		next if m"^#";
 		my @c = split m"\s+";
-		if( $c[0] eq "check_interval_minutes" ){
-			$lastrule = {
-			};
-			push @rule, $lastrule;
-		}elsif(	$c[0] eq "default" ){
-			my $priority = $c[1];
-			$lastdetect = {
-				'action' => 'default',
-				'default_priority' => $priority,
-			};
-			push @{ $lastrule->{'detect'} }, $lastdetect;
+		if( $c[0] eq "detection_interval_minutes" ){
+			$config{'detection_interval_minutes'} = $c[1];
+		}elsif( $c[0] eq "cleanup_interval_minutes" ){
+			$config{'cleanup_interval_minutes'} = $c[1];
+		}elsif( $c[0] eq "working_file_preserve_minutes" ){
+			$config{'working_file_preserve_minutes'} = $c[1];
+		}else{
+			die;
 		}
 	}
 	close F;
 
-	return \@rule;
+	return \%config;
 }
 
 ####
@@ -98,9 +91,10 @@ sub exec_detect ($) {
 	}
 	foreach( @diffs ){
 		my ($rc, $err) = execcmd( ["$LIBDIR/detect.pl"], $_, $outfile );
-		mark_as_done $_;
 		if( $rc ){
 			panopticdlog "detect.pl: rc=%d", $rc;
+		}else{
+			mark_as_done $_;
 		}
 		if( $err ){
 			panopticdlog "detect.pl: err=%s", $err;
@@ -120,9 +114,10 @@ sub exec_delivery ($) {
 	}
 	foreach( @events ){
 		my ($rc, $err) = execcmd( ["$LIBDIR/delivery.pl"], $_, undef );
-		mark_as_done $_;
 		if( $rc ){
 			panopticdlog "delivery.pl: rc=%d", $rc;
+		}else{
+			mark_as_done $_;
 		}
 		if( $err ){
 			panopticdlog "delivery.pl: err=%s", $err;
@@ -141,9 +136,10 @@ sub exec_post ($) {
 	}
 	foreach( @envelopes ){
 		my ($rc, $err) = execcmd( ["$LIBDIR/post.pl"], $_, undef );
-		mark_as_done $_;
 		if( $rc ){
 			panopticdlog "delivery.pl: rc=%d", $rc;
+		}else{
+			mark_as_done $_;
 		}
 		if( $err ){
 			panopticdlog "delivery.pl: err=%s", $err;
@@ -151,12 +147,30 @@ sub exec_post ($) {
 	}
 }
 
-sub cleanup () {
-	die;
+sub cleanup ($) {
+	my ($minutes) = @_;
+	my $expire = time - $minutes * 60;
+	foreach my $d ($DIFFDIR, $EVENTDIR, $POSTDIR){
+		opendir D, $d or next;
+		my @f;
+		while( my $f = readdir D ){
+			next if $f =~ m"^\.";
+			next if $f =~ m"\.done$";
+			my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,
+			    $atime,$mtime,$ctime,$blksize,$blocks) = stat "$d/$f";
+			next unless $mtime < $expire;
+			push @f, $f;
+		}
+		closedir D;
+
+		foreach my $f (@f){
+			panopticdlog "$d/$f: cannot unlink." unless unlink "$d/$f";
+		}
+	}
 }
 
 ####
-sub daemonize {
+sub daemonize () {
 	my $pid = fork;
 	if( $pid ){
 		$::SIG{'USR1'} = sub {
@@ -177,31 +191,98 @@ sub daemonize {
 	}
 }
 
-sub now () {
-	my ($sec, $min, $hour, $day, $mon, $year) = localtime;
-	return sprintf "%04d-%02d-%02d_%02d:%02d:%02d", $year+1900, $mon+1, $day, $hour, $min, $sec;
+sub daemon_is_running () {
+	return undef unless open F, '<', "$RUNDIR/panopticd.pid";
+	my $pid = <F>;
+	close F;
+	return undef unless $pid < 1;
+	return undef unless kill 0, $pid;
+	return 1;
 }
 
-####
-sub loop {
-	while(1){
-		oneshot();
-		sleep 60;
+sub send_signal () {
+	return undef unless open F, '<', "$RUNDIR/panopticd.pid";
+	my $pid = <F>;
+	close F;
+	return kill 'TERM', $pid;
+}
+
+sub loop () {
+	my $config = read_panopticd_conf();
+	my $detection_interval_minutes = $config->{'detection_interval_minutes'};
+	my $cleanup_interval_minutes = $config->{'cleanup_interval_minutes'};
+	my $working_file_preserve_minutes = $config->{'working_file_preserve_minutes'};
+
+	my $next_detection = time;
+	my $next_cleanup = time;
+	my $running = 1;
+
+	panopticdlog "panopticd: daemon started.";
+	$SIG{'TERM'} = sub {
+		$running = undef;
+		panopticdlog "panopticd: daemon received SIGTERM.";
+	};
+	while($running){
+		if( $next_detection <= time ){
+			my $timestamp = timestamp();
+			exec_select( $timestamp );
+			exec_detect( $timestamp );
+			exec_delivery( $timestamp );
+			exec_post( $timestamp );
+			$next_detection = time + $detection_interval_minutes * 60;
+		}
+		if( $next_cleanup <= time ){
+			cleanup( $working_file_preserve_minutes );
+			$next_cleanup = time + $cleanup_interval_minutes * 60;
+		}
+
+		my $sleep = $next_detection < $next_cleanup ?
+			$next_detection - time :
+			$next_cleanup - time;
+		$sleep = 30 if $sleep < 30;
+		sleep $sleep;
 	}
+
+	panopticdlog "panopticd: daemon exited.";
 }
 
-sub oneshot {
+sub start_daemon () {
+	if( daemon_is_running ){
+		print "panopticd: daemon is already running.\n";
+		return;
+	}
+	daemonize;
+	loop;
+}
+
+sub stop_daemon () {
+	unless( daemon_is_running ){
+		print "panopticd: daemon is not running yet.\n";
+		return;
+	}
+	send_signal or print "panopticd: cannot send signal.";
+}
+
+sub oneshot () {
+	my $config = read_panopticd_conf();
 	my $timestamp = timestamp();
 	exec_select( $timestamp );
 	exec_detect( $timestamp );
 	exec_delivery( $timestamp );
 	exec_post( $timestamp );
+
+	my $working_file_preserve_minutes = $config->{'working_file_preserve_minutes'};
+	cleanup( $working_file_preserve_minutes );
 }
 
 
 ####
-if( $ARGV[0] eq 'oneshot' ){
-	oneshot();
+if    ( $ARGV[0] eq 'oneshot' ){
+	oneshot;
+}elsif( $ARGV[0] eq 'start' ){
+	start_daemon;
+}elsif( $ARGV[0] eq 'stop' ){
+	stop_daemon;
 }else{
 	die "not implemented, stopped";
 }
