@@ -12,7 +12,8 @@ our @EXPORT = (
 	'hash2ltsv', 'ltsv2hash', 'mergehash',
 	'timestamp', 'now',
 	'timestamp2unixtime', 'unixtime2timestamp',
-	'template', 'execcmd', 'sendmail', 'panopticdlog'
+	'template', 'execcmd', 'sendmail',
+	'panopticdlog', 'panopticddebug'
 );
 
 $0 =~ m"^(.*/)[^/]+$";
@@ -20,6 +21,7 @@ our $BASEDIR = "$1/..";
 our $RUNDIR = "$BASEDIR/run";
 our $LOGDIR = "$BASEDIR/log";
 our $SENDMAILEXE = '/usr/lib/sendmail';
+our $DEBUG;
 
 ####
 sub ltsv2hash ($) {
@@ -121,10 +123,19 @@ sub panopticdlog ($;@) {
 		open LOG, '>>', "$LOGDIR/panopticd.log" or die;
 		LOG->autoflush(1);
 	}
-	my $timestamp = timestamp;
+	my $timestamp = now;
 	my $text = sprintf $format, @args;
 	$text =~ s{([\x00-\x1f\x7e\\])}{ '\x' . unpack('H2', $1); }e;
-	print LOG "$timestamp panopticd: $text\n";
+	print LOG "$timestamp $text\n";
+}
+
+sub panopticddebug ($;@) {
+	my ($format, @args) = @_;
+	return unless $DEBUG;
+	my $timestamp = now;
+	my $text = sprintf $format, @args;
+	$text =~ s{([\x00-\x1f\x7e\\])}{ '\x' . unpack('H2', $1); }e;
+	print "$timestamp $text\n";
 }
 
 sub sendmail ($$$) {

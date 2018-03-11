@@ -17,7 +17,7 @@ our $POSTDIR = "$BASEDIR/spool/post";
 our $DEBUG = 1;
 
 if( @ARGV < 1 ){
-	print "usage: % $0 {start|stop|oneshot}\n";
+	print "usage: % $0 {start|stop|status|oneshot}\n";
 	exit 1;
 }
 
@@ -195,7 +195,7 @@ sub daemon_is_running () {
 	return undef unless open F, '<', "$RUNDIR/panopticd.pid";
 	my $pid = <F>;
 	close F;
-	return undef unless $pid < 1;
+	return undef unless $pid > 1;
 	return undef unless kill 0, $pid;
 	return 1;
 }
@@ -244,23 +244,35 @@ sub loop () {
 	}
 
 	panopticdlog "panopticd: daemon exited.";
+	unlink "$RUNDIR/panopticd.pid" or
+		panopticdlog "panopticd: cannot remove pidfile.";
+	return 1;
 }
 
 sub start_daemon () {
 	if( daemon_is_running ){
 		print "panopticd: daemon is already running.\n";
-		return;
+		exit 0;
 	}
+	
 	daemonize;
-	loop;
+	unless( loop ){
+		print "panopticd: error occurred in loop.\n";
+		exit 1;
+	}
+	exit 0;
 }
 
 sub stop_daemon () {
 	unless( daemon_is_running ){
 		print "panopticd: daemon is not running yet.\n";
-		return;
+		exit 0;
 	}
-	send_signal or print "panopticd: cannot send signal.";
+	unless( send_signal ){
+		print "panopticd: cannot send signal.";
+		exit 2;
+	}
+	exit 0;
 }
 
 sub oneshot () {
@@ -273,6 +285,7 @@ sub oneshot () {
 
 	my $working_file_preserve_minutes = $config->{'working_file_preserve_minutes'};
 	cleanup( $working_file_preserve_minutes );
+	exit 0;
 }
 
 
@@ -283,6 +296,14 @@ if    ( $ARGV[0] eq 'oneshot' ){
 	start_daemon;
 }elsif( $ARGV[0] eq 'stop' ){
 	stop_daemon;
+}elsif( $ARGV[0] eq 'status' ){
+	if( daemon_is_running ){
+		print "panopticd: daemon is running.\n";
+		exit 0;
+	}else{
+		print "panopticd: daemon is not running.\n";
+		exit 1;
+	}
 }else{
 	die "not implemented, stopped";
 }

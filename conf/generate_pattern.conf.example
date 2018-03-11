@@ -4,4 +4,6 @@ generate_pattern
 	patternname			%{samplelogname}
 
 	replace	\d{2,}			\d{2,}
-	replace	(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\x20\d{2}\x20\d{2}:\d{2}:\d{2}\x20[-\w]{2,24}	(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\x20\d{2}\x20\d{2}:\d{2}:\d{2}\x20[-\w]{2,24}
+	replace	(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\x20[\s\d]\d\x20[\s\d]\d:\d{2}:\d{2}\x20[-\w]{2,24}	(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\x20[\s\d]\d\x20[\s\d]\d:\d{2}:\d{2}\x20[-\w]{2,24}
+	# for nullmailer
+	replace queued.as.[0-9A-F]{11}	queued.as.[0-9A-F]{11}

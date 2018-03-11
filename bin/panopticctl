@@ -89,9 +89,11 @@ sub read_generate_pattern_conf {
 	my @pattern_rule;
 	my $context;
 	my $last;
+	my $rulenum = 0;
 	my $error_occurred;
-	open F, '<', "$CONFDIR/generate_pattern.conf" or die;
 	my $confname = "generate_pattern.conf";
+	open F, '<', "$CONFDIR/$confname" or die "$confname: cannot open, stopped";
+	panopticddebug "$confname: opened.";
 	while( <F> ){
 		chomp;
 		s{^\s*}{}g;
@@ -99,12 +101,14 @@ sub read_generate_pattern_conf {
 		next if m{^#};
 		my @c = split m{\s+};
 
-#print STDERR "DEBUG2: @c\n";
+		panopticddebug "$confname: context=%s, error=%s, config=%s.", $context, ,$error_occurred, "@c";
 		if   ( $c[0] eq 'generate_pattern' ){
 			$error_occurred = 1 unless lastrule_is_valid(
 				$last, "$confname:$."
 			);
+			panopticddebug "$confname: newrule=%d.", $rulenum;
 			$last = {
+				'id' => $rulenum,
 				'type' => 'generate_pattern',
 				'if_samplelogname_matches' => [ qr"." ],
 				'patternname' => '%{filename}',
@@ -112,6 +116,7 @@ sub read_generate_pattern_conf {
 				'replace' => [],
 			};
 			$context = 'generate';
+			$rulenum++;
 			push @generate_pattern_rule, $last;
 		}elsif( $c[0] eq 'if_samplelogname_matches' ){
 			next unless context_is_valid(
@@ -199,7 +204,7 @@ sub generate_pattern {
 		next if $f =~ m{^\.};
 		next unless $f =~ m{^(.*)\.samplelog$};
 		my $name = $1;
-#print STDERR "DEBUG: $f\n";
+		panopticddebug "generate_pattern: samplelog=%s.", $f;
 
 		my %attr = (
 			'samplelogname' => $name,
@@ -208,7 +213,7 @@ sub generate_pattern {
 		my %replace_subst;
 		OUTSIDE:
 		foreach my $rule ( @{$conf->{'generate_pattern_rule'}} ){
-print STDERR "DEBUG1: $name\n";
+			panopticddebug "generate_pattern:  ruleid=%d.", $rule->{'id'};
 
 			# 
 			foreach my $re ( @{$rule->{'if_samplelogname_matches'}} ){
@@ -224,6 +229,7 @@ print STDERR "DEBUG1: $name\n";
 
 			# pattern name
 			my $patternname = template( $rule->{'patternname'}, \%attr );
+			panopticddebug "generated_pattern:  patternname=%s.", $patternname;
 
 			# match
 			foreach my $replace ( @{$rule->{'replace'}} ){
@@ -239,8 +245,7 @@ print STDERR "DEBUG1: $name\n";
 			my $match_concat = join('|', @{$replace_match{$patternname}});
 			my $match = qr"(?:$match_concat)";
 
-print STDERR "DEBUG2: -> $patternname\n";
-			open F, '<', "$PATTERNDIR/$f" or die;
+			open F, '<', "$PATTERNDIR/$f" or die "$f: cannot open, stopped";
 			while( <F> ){
 				my $pattern_entry;
 				while( m"$match"p ){
@@ -256,7 +261,8 @@ print STDERR "DEBUG2: -> $patternname\n";
 	}
 	closedir D;
 	foreach my $patternname ( keys %pattern ){
-		open W, '>', "$PATTERNDIR/$patternname.generatedpattern" or die;
+		print "generate_pattern: $patternname\n";
+		open W, '>', "$PATTERNDIR/$patternname.generatedpattern" or die "$patternname.generatedpattern: cannot open, stopped";
 		print W $pattern{$patternname};
 		close W;
 	}
@@ -267,11 +273,12 @@ sub read_build_patternset_conf {
 	my @simple_patternset_rule;
 	my @complex_patternset_rule;
 	my @patternset_rule;
+	my $rulenum = 0;
 	my $last;
 	my $context;
 	my $error_occurred;
-	open F, '<', "$CONFDIR/build_patternset.conf" or die;
 	my $confname = "build_patternset.conf";
+	open F, '<', "$CONFDIR/$confname" or die "$confname: cannot open, stopped";
 	while( <F> ){
 		chomp;
 		s{^\s*}{}g;
@@ -279,17 +286,21 @@ sub read_build_patternset_conf {
 		next if m{^#};
 		my @c = split m{\s+};
 
+		panopticddebug "$confname: context=%s, error=%s, config=%s.", $context, ,$error_occurred, "@c";
 		if   ( $c[0] eq 'build_from_pattern' ){
 			$error_occurred = 1 unless lastrule_is_valid(
 				$last, "$confname:$."
 			);
+			panopticddebug "$confname: newrule=%d type=simple.", $rulenum;
 			$last = {
+				'id' => $rulenum,
 				'type' => 'simple',
 				'if_patternname_matches' => [ qr"." ],
 				'patternsetname' => '%{patternname}',
 				'capture_from_patternname' => [],
 			};
 			$context = 'simple';
+			$rulenum++;
 			push @simple_patternset_rule, $last;
 		}elsif( $c[0] eq 'if_patternname_matches' ){
 			next unless context_is_valid(
@@ -316,13 +327,16 @@ sub read_build_patternset_conf {
 			$error_occurred = 1 unless lastrule_is_valid(
 				$last, "$confname:$."
 			);
+			panopticddebug "$confname: newrule=%d type=complex.", $rulenum;
 			$last = {
+				'id' => $rulenum,
 				'type' => 'undefined_complex',
 				'if_simple_patternsetname_match' => [ qr"." ],
 				'capture_from_patternsetname' => [],
 				'patternsetname' => '%{patternsetname}',
 			};
 			$context = 'complex';
+			$rulenum++;
 			push @complex_patternset_rule, $last;
 		}elsif( $c[0] eq 'single_matchable' ){
 			next unless context_is_valid(
@@ -355,13 +369,16 @@ sub read_build_patternset_conf {
 			$error_occurred = 1 unless lastrule_is_valid(
 				$last, "$confname:$."
 			);
+			panopticddebug "$confname: newrule=%d type=patternset.", $rulenum;
 			$last = {
+				'id' => $rulenum,
 				'type' => 'patternset',
 				'if_patternsetname_matches' => [ qr"." ],
 				'capture_from_patternsetname' => [],
 				'set' => [],
 			};
 			$context = 'patternset';
+			$rulenum++;
 			push @patternset_rule, $last;
 		}elsif( $c[0] eq 'if_patternsetname_matches' ){
 			next unless context_is_valid(
@@ -409,7 +426,7 @@ sub build_patternset {
 		next if $f =~ m{^\.};
 		next unless $f =~ m{^(.*)\.(pattern|generatedpattern)$};
 		my $name = $1;
-#print STDERR "DEBUG3: $f\n";
+		panopticddebug "build_patternset: pattern=%s.", $f;
 
 		my %aggregate_time_attr = (
 			'filename' => $f,
@@ -421,18 +438,18 @@ sub build_patternset {
 			foreach my $re ( @{$rule->{'if_patternname_matches'}} ){
 				next OUTSIDE unless $f =~ m"$re";
 			}
-#print STDERR "DEBUG3: rule: $rule\n";
+			panopticddebug "build_patternset:  ruleid=%d.", $rule->{'id'};
 
 			# capture attributes from patternname
 			foreach my $entry ( @{$rule->{'capture_from_patternname'}} ){
 				my ($attrname, $re) = @$entry;
-#print STDERR "DEBUG3: $attrname, $re\n";
 				next unless $f =~ m"$re";
 				$aggregate_time_attr{$attrname} = $1;
 			}
 
 			# decide patternset name
 			my $patternsetname = template( $rule->{'patternsetname'}, \%aggregate_time_attr );
+			panopticddebug "build_patternset:  patternsetname=%s.", $patternsetname;
 
 			# initialize patternset entity
 			unless( exists $simple_patternset_entity{$patternsetname} ){
@@ -463,7 +480,6 @@ sub build_patternset {
 			open F, '<', "$PATTERNDIR/$patternfile" or die;
 			while( <F> ){
 				chomp;
-#print STDERR "DEBUG3: $_\n";
 				$ra->add( $_ );
 			}
 			close F;
@@ -496,6 +512,7 @@ sub build_patternset {
 		}
 		$pe->{'attr'} = \%entity_attr;
 
+		print "build_patternset: $patternsetname\n";
 		write_patternset( $patternsetname, $pe );
 	}
 
@@ -514,7 +531,6 @@ sub build_patternset {
 			# capture attributes from patternname
 			foreach my $entry ( @{$rule->{'capture_from_patternsetname'}} ){
 				my ($attrname, $re) = @$entry;
-#print STDERR "DEBUG3: $attrname, $re\n";
 				next unless $subname =~ m"$re";
 				$aggregate_time_attr{$attrname} = $1;
 			}
@@ -613,6 +629,7 @@ sub build_patternset {
 		$pe->{'attr'} = \%entity_attr;
 
 		#
+		print "build_patternset: $patternsetname\n";
 		write_patternset( $patternsetname, $pe );
 	}
 
@@ -622,13 +639,29 @@ sub build_patternset {
 sub build {
 	generate_pattern();
 	build_patternset();
+	exit 0;
 }
 
 sub clean {
-	die;
+	my @file;
+	opendir D, $PATTERNDIR or die;
+	while( my $f = readdir D ){
+		next if $f =~ m"^\.";
+		next unless $f =~ m"\.(generatedpattern|patternset)$";
+		push @file, $f;
+	}
+	closedir D;
+	foreach my $file ( @file ){
+		print "cleanup: $file\n";
+	}
+	exit 0;
 }
 
 sub test {
+	eval {
+		use re 'debug';
+
+	};
 	die;
 }
 
