@@ -14,9 +14,13 @@ our $PATTERNDIR = "$BASEDIR/conf/pattern";
 sub read_patternset {
 	my ( $patternsetname ) = @_;
 	my %patternset = (
-		're' => undef,
-		'attr' => {},
-		'source' => {},
+		'type'     => undef,
+		're'       => undef,
+		'attr'     => {},
+		'subhits'  => undef,
+		'subres'   => [],
+		'subattrs' => [],
+		'subnames' => [],
 	);
 	my $f = "$patternsetname.patternset";
 	my $type;
@@ -32,25 +36,62 @@ sub read_patternset {
 			$type = ${^POSTMATCH};
 			$patternset{'type'} = $type;
 		}elsif( $paramname eq 're' ){
-			$patternset{'re'} =  ${^POSTMATCH};
+			if( $PanopticCommon::DEBUG ){
+				use re 'debug';
+				$patternset{'re'}   = qr"^${^POSTMATCH}$";
+			}else{
+				$patternset{'re'}   = qr"^${^POSTMATCH}$";
+			}
 		}elsif( $paramname eq 'attr' ){
 			$patternset{'attr'} = ltsv2hash( ${^POSTMATCH} );
-		}elsif( $paramname eq 'subpatternset_attrs' ){
+		}elsif( $paramname eq 'res' ){
+			push @{$patternset{'res'}},   qr"${^POSTMATCH}";
+		}elsif( $paramname eq 'subpatternset_re' ){
 			unless( m"^(\w+)\t(\d+)\t"p ){
 				print STDERR "$f:$.: syntax error.\n";
 				next;
 			}
 			my $index = $2;
-			$patternset{'attrs'}->[$index] = ltsv2hash( ${^POSTMATCH} );
+			$patternset{'subres'}->[$index] = qr"${^POSTMATCH}";
+		}elsif( $paramname eq 'subpatternset_attr' ){
+			unless( m"^(\w+)\t(\d+)\t"p ){
+				print STDERR "$f:$.: syntax error.\n";
+				next;
+			}
+			my $index = $2;
+			$patternset{'subattrs'}->[$index] = ltsv2hash( ${^POSTMATCH} );
 		}elsif( $paramname eq 'include_patternfiles' ){
 			$patternset{'include_patternfiles'} = [ split m"\t", ${^POSTMATCH} ];
 		}elsif( $paramname eq 'subpatternset_names' ){
-			die;
+			$patternset{'subpatternset_names'} = [ split m"\t", ${^POSTMATCH} ];
 		}else{
-			die;
+			die "$f: $paramname is not allowed here.\n";
 		}
 	}
 	close F;
+
+	if( $patternset{'type'} eq 'multi_matchable' ){
+		my @subhits;
+		my $res;
+		my $num;
+		foreach my $re ( @{$patternset{'subres'}} ){
+			my $n = $num;
+			if( $res eq '' ){
+				$res = qr"$re$(?{push @subhits, $n;})";
+			}else{
+				$res = qr"$res|$re$(?{push @subhits, $n;})";
+			}
+			$num++;
+		}
+		if( $PanopticCommon::DEBUG ){
+			use re 'debug';
+			$patternset{'re'} = qr"^(?:$res)(*FAIL)";
+		}else{
+			$patternset{'re'} = qr"^(?:$res)(*FAIL)";
+		}
+		$patternset{'subhits'} = \@subhits;
+	}
+
 	return \%patternset;
 }
 
@@ -177,9 +218,7 @@ sub read_detect_conf {
 				'action' => 'detect',
 				'patternset' => undef,
 				'exclude_patternset' => undef,
-				'set' => [
-					['eventname' => $eventname],
-				],
+				'set' => [],
 				'eventname_set' => undef,
 				'priority' => undef,
 			};
@@ -221,6 +260,7 @@ sub read_detect_conf {
 				"$confname:$.", $c[0],
 			);
 			my $value = $c[1];
+			push @{$lastdetect->{'set'}}, ['priority' => $value];
 			$lastdetect->{'priority_set'} = 1;
 		}elsif(	$c[0] eq "ignore" ){
 			$error = 1 unless lastdetect_is_valid(
@@ -249,9 +289,7 @@ sub read_detect_conf {
 				'action' => 'default',
 				'patternset' => undef,
 				'exclude_patternset' => undef,
-				'set' => [
-					['eventname' => 'default'],
-				],
+				'set' => [],
 				'eventname_set' => undef,
 				'priority' => undef,
 			};
@@ -282,13 +320,15 @@ sub detect_patternset ($$$$) {
 		$patternsetmap->{$patternsetname} = $p;
 	}
 
+	panopticddebug "detect_patternset: patternsetname=%s, message=%s", $patternsetname, $message;
+
 	my @r;
 	my $type = $p->{'type'};
 	my $re = $p->{'re'};
+	panopticddebug "detect_patternset: type=%s", $type;
 	if    ( $type eq 'simple' ){
-#print STDERR "DEBUG1: $message =~ $re\n";
 		return () unless $message =~ m"$re";
-#print STDERR "DEBUG1: HIT: $message\n";
+		panopticddebug "detect_patternset: hit";
 		my $patternset_attr = $p->{'attr'};
 		push @r, {
 			'type' => 'event',
@@ -296,25 +336,29 @@ sub detect_patternset ($$$$) {
 			'attr' => mergehash(%$runtime_attr, %$patternset_attr),
 		};
 	}elsif( $type eq 'single_matchable' ){
-		my @m;
+		my $subhits = $p->{'subhits'};
+		my $subattrs = $p->{'subattrs'};
+		@$subhits = ();
 		$message =~ m"$re";
-		return () unless @m;
-		my $subpatternset_attrs = $p->{'subpatternset_attrs'};
-		my $subpatternset_attr = $subpatternset_attrs->[ $m[0] ];
+		return () unless @$subhits;
+		panopticddebug "detect_patternset: hit=%d", $subhits->[0];
+		my $subattr = $subattrs->[ $subhits->[0] ];
 		push @r, {
-			'attr' => mergehash(%$runtime_attr, %$subpatternset_attr),
+			'attr' => mergehash(%$runtime_attr, %$subattr),
 		};
 	}elsif( $type eq 'multi_matchable' ){
-		my @m;
+		my $subhits = $p->{'subhits'};
+		my $subattrs = $p->{'subattrs'};
+		@$subhits = ();
 		$message =~ m"$re";
-		return () unless @m;
-		my $subpatternset_attrs = $p->{'subpatternset_attrs'};
-		foreach my $m ( @m ){
-			my $subpatternset_attr = $subpatternset_attrs->[ $m ];
+		return () unless @$subhits;
+		foreach my $h ( @$subhits ){
+			panopticddebug "detect_patternset: hit=%d", $h;
+			my $subattr = $subattrs->[ $h ];
 			push @r, {
 				'type' => 'event',
 				'message' => $message,
-				'attr' => mergehash(%$runtime_attr, %$subpatternset_attr),
+				'attr' => mergehash(%$runtime_attr, %$subattr),
 			};
 		}
 	}else{
@@ -339,11 +383,10 @@ sub detect_internal ($$$) {
 		}
 	}
 
-#print STDERR "DEBUG3: $message\n";
 	my @result;
 	foreach my $detect ( @{$rule->{'detect'}} ){
 		my $action = $detect->{'action'};
-#print STDERR "DEBUG4: $action\n";
+		panopticddebug "detect_internal: action=%s", $action;
 		if    ( $action eq 'detect' ){
 			my @detect_result = detect_patternset(
 				$patternsetmap, $detect->{'patternset'},
@@ -360,8 +403,11 @@ sub detect_internal ($$$) {
 			my $set = $detect->{'set'};
 			foreach my $event ( @detect_result ){
 				my $event_attr = $event->{'attr'};
+				my @a = %$event_attr;
 				foreach my $e ( @{$set} ){
-					$event_attr->{$e->[0]} = template( $e->[1], $event_attr );
+					my $k = $e->[0];
+					my $v = template( $e->[1], $event_attr );
+					$event_attr->{$k} = $v;
 				}
 				push @result, $event;
 			}
@@ -399,7 +445,7 @@ sub detect_internal ($$$) {
 }
 
 ####
-sub detect {
+sub detect () {
 	my $conf = read_detect_conf();
 	my $patternsetmap = $conf->{'patternsetmap'};
 	my $detection_rules = $conf->{'rules'};
@@ -456,11 +502,12 @@ sub detect {
 		print "attr\t$attr\n";
 		print "\t$message\n";
 	}
-	#my ($out, $in);
-	#open2($out, $in, "$dir E, '-|$TARGETDIR or die;
-	#while( <D> ){
 }
 
 
 ####
-detect();
+if( $ARGV[0] eq '-d' ){
+	$PanopticCommon::DEBUG = 1;
+}
+detect;
+

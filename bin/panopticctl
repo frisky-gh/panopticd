@@ -8,8 +8,9 @@ use PanopticCommon;
 $0 =~ m"^(.*/)[^/]+$";
 our $BASEDIR = "$1/..";
 
-our $CONFDIR = "$BASEDIR/conf";
+our $CONFDIR    = "$BASEDIR/conf";
 our $PATTERNDIR = "$BASEDIR/conf/pattern";
+our $POSTDIR    = "$BASEDIR/spool/post";
 
 if( @ARGV < 1 ){
 	print "usage: % $0 build\n";
@@ -17,6 +18,10 @@ if( @ARGV < 1 ){
 	print "       % $0 clean\n";
 	print "           or\n";
 	print "       % $0 test RULENAME < input\n";
+	print "           or\n";
+	print "       % $0 add_samplelog_from_last_send ENVELOPENAME SAMPLELOGNAME\n";
+	print "           or\n";
+	print "       % $0 version\n";
 	exit 1;
 }
 
@@ -24,23 +29,28 @@ if( @ARGV < 1 ){
 sub write_patternset ($$) {
 	my ($patternsetname, $patternset) = @_;
 	my $type = $patternset->{'type'};
-	my $re   = $patternset->{'re'};
-	my $attr = $patternset->{'attr'};
-	my $attr_ltsv = hash2ltsv( $attr );
 	open W, '>', "$PATTERNDIR/$patternsetname.patternset" or die;
 	print W "type	$type\n";
-	print W "re	$re\n";
-	print W "attr	$attr_ltsv\n";
-	if    ( $type eq 'simple' ){
+	if( $type eq 'simple' ){
+		my $re   = $patternset->{'re'};
+		my $attr = $patternset->{'attr'};
+		my $attr_ltsv = hash2ltsv( $attr );
+		print W "re	$re\n";
+		print W "attr	$attr_ltsv\n";
 		my $include_patternfiles = $patternset->{'include_patternfiles'};
 		print W "include_patternfiles	", join("\t", @$include_patternfiles), "\n";
 	}elsif( $type eq 'single_matchable' or $type eq 'multi_matchable' ){
-		my $subpatternset_names = $patternset->{'subpatternset_names'};
-		print W "subpatternset_names	", join("\t", @$subpatternset_names), "\n";
+		my $subnames = $patternset->{'subpatternset_names'};
+		print W "subpatternset_names	", join("\t", @$subnames), "\n";
 		my $n = 0;
-		foreach my $a ( @{ $patternset->{'subpatternset_attrs'} } ){
-			my $a_ltsv = hash2ltsv( $a );
-			print W "subpatternset_attrs	$n	$a_ltsv\n";
+		foreach my $re ( @{ $patternset->{'subpatternset_res'} } ){
+			print W "subpatternset_re	$n	$re\n";
+			$n++;
+		}
+		my $n = 0;
+		foreach my $attr ( @{ $patternset->{'subpatternset_attrs'} } ){
+			my $attr_ltsv = hash2ltsv( $attr );
+			print W "subpatternset_attr	$n	$attr_ltsv\n";
 			$n++;
 		}
 	}else{
@@ -63,19 +73,18 @@ sub lastrule_is_valid ($$) {
         my ($lastrule, $location) = @_;
         return 1 unless defined $lastrule;
 	if    ( $lastrule->{'type'} eq 'generate_pattern' ){
-        	print STDERR "$location: need patternname clause.\n" and
+        	print STDERR "$location: needs patternname clause.\n" and
         	return undef unless defined $lastrule->{'patternname'};
-	}elsif( $lastrule->{'type'} eq 'generate_pattern' ){
 	}elsif( $lastrule->{'type'} eq 'simple' ){
-        	print STDERR "$location: need patternsetname clause.\n" and
+        	print STDERR "$location: needs patternsetname clause.\n" and
         	return undef unless defined $lastrule->{'patternsetname'};
 	}elsif( $lastrule->{'type'} eq 'undefined_complex' ){
         	print STDERR "$location: put single_matchable or multi_matchable.\n";
 	}elsif( $lastrule->{'type'} eq 'single_matchable' ){
-        	print STDERR "$location: need patternsetname clause.\n" and
+        	print STDERR "$location: needs patternsetname clause.\n" and
         	return undef unless defined $lastrule->{'patternsetname'};
 	}elsif( $lastrule->{'type'} eq 'multi_matchable' ){
-        	print STDERR "$location: need patternsetname clause.\n" and
+        	print STDERR "$location: needs patternsetname clause.\n" and
         	return undef unless defined $lastrule->{'patternsetname'};
 	}elsif( $lastrule->{'type'} eq 'patternset' ){
 	}else{
@@ -476,11 +485,14 @@ sub build_patternset {
 		# setup regular expression
 		my $patternfiles = $pe->{'include_patternfiles'};
 		my $ra = Regexp::Assemble->new;
+		my %ra_precheck;
 		foreach my $patternfile ( @$patternfiles ){
 			open F, '<', "$PATTERNDIR/$patternfile" or die;
 			while( <F> ){
 				chomp;
+				next if $ra_precheck{$_};
 				$ra->add( $_ );
+				$ra_precheck{$_} = 1;
 			}
 			close F;
 		}
@@ -488,7 +500,7 @@ sub build_patternset {
 
 		# setup attribute
 		my %entity_attr = (
-			'eventname' => $patternsetname,
+			'patternsetname' => $patternsetname,
 		);
 		OUTSIDE:
 		foreach my $rule ( @{$conf->{'patternset_rule'}} ){
@@ -547,7 +559,6 @@ sub build_patternset {
 				$complex_patternset_entity{$patternsetname} = {
 					'type' => $rule->{'type'},
 					'attr' => undef,
-					're' => undef,
 					'subpatternset_names' => [],
 					'subpatternset_attrs' => [],
 					'subpatternset_res' => [],
@@ -569,37 +580,27 @@ sub build_patternset {
 			my %subattr = %{$subpe->{'attr'}};
 			push @{$pe->{'subpatternset_res'}}, $subre;
 			push @{$pe->{'subpatternset_attrs'}}, \%subattr;
+
+			#
+			print "build_patternset: $patternsetname <- $subname\n";
 		}
 	}
+
 	# complex patternset setup
 	while( my ($patternsetname, $pe) = each %complex_patternset_entity ){
 		# setup regular expression
+		my @m;
 		my $res;
 		my $type = $pe->{'type'};
 		if( $type eq 'single_matchable' ){
-			my @res;
-			my $n = 0;
-			foreach my $re ( @{ $pe->{'subpatternset_res'} } ){
-				push @res, "$re$(?{push \@m, $n;})";
-				$n++;
-			}
-			$res = '^' . join('|', @res);
 		}elsif( $type eq 'multi_matchable' ){
-			my @res;
-			my $n = 0;
-			foreach my $re ( @{ $pe->{'subpatternset_re'} } ){
-				push @res, "$re$(?{push \@m, $n;})";
-				$n++;
-			}
-			$res = '^' . join('|', @res) . '(*FAIL)';
 		}else{
 			die;
 		}
-		$pe->{'re'} = qr"^$res";
 
 		# setup entity attribute
 		my %entity_attr = (
-			'eventname' => $patternsetname,
+			'patternsetname' => $patternsetname,
 		);
 		OUTSIDE:
 		foreach my $rule ( @{$conf->{'attribute_rule'}} ){
@@ -662,7 +663,35 @@ sub test {
 		use re 'debug';
 
 	};
-	die;
+	die "not implemented.";
+}
+
+sub add_samplelog_from_last_send ($$) {
+	my ($envelopename, $samplelogname) = @_;
+	my @f;
+	opendir D, $POSTDIR or die "$POSTDIR: cannot open, stopped";
+	while( my $f = readdir D ){
+		next if $f =~ m"^\.";
+		next unless $f =~ m"^(.*)_(\d{4}-\d{2}-\d{2}_\d{2}:\d{2})\.done$";
+		my $name = $1;
+		my $timestamp = $2;
+		next unless $name eq $envelopename;
+		push @f, $f;
+	}
+	closedir D;
+	my ( $lastfile ) = sort {$b cmp $a} @f;
+	my $last;
+	open F, '<', "$POSTDIR/$lastfile" or die "$lastfile: cannot open, stopped";
+	while( <F> ){
+		chomp;
+		next unless m"^\t"p;
+		$last .= ${^POSTMATCH} . "\n";
+	}
+	close F;
+	open F, '>>', "$PATTERNDIR/$samplelogname.samplelog" or die "$samplelogname: cannot open, stopped";
+	print F $last;
+	close F;
+	print "add_samplelog_from_lastfile_send: $lastfile -> $samplelogname\n";
 }
 
 ####
@@ -672,6 +701,11 @@ if    ( $ARGV[0] eq 'build' ){
 	clean();
 }elsif( $ARGV[0] eq 'test' ){
 	test();
+}elsif( $ARGV[0] eq 'add_samplelog_from_last_send' ){
+	add_samplelog_from_last_send $ARGV[1], $ARGV[2];
+}elsif( $ARGV[0] eq 'version' ){
+	print "0.0.1\n";
+	exit 0;
 }else{
 	die;
 }

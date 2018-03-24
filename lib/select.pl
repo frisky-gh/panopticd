@@ -1,5 +1,8 @@
 #!/usr/bin/perl
+
 use strict;
+use FindBin::libs;
+use PanopticCommon;
 
 $0 =~ m"^(.*)/[^/]+$";
 our $BASEDIR = "$1/..";
@@ -8,18 +11,6 @@ our $STATUSDIR = "$BASEDIR/status";
 our $CONFDIR = "$BASEDIR/conf";
 
 our $LOGPATTERN = qr"^(syslog|\w+\.log)_....-..-..$";
-
-####
-sub hash2ltsv ($) {
-	my ( $hash ) = @_;
-	my @r;
-	foreach my $k ( sort {$a cmp $b} keys %$hash ){
-		my $v = $hash->{$k};
-		$v =~ s{([\x00-\x1f\x7e\\])}{ '\x' . unpack('H2', $1); }e;
-		push @r, "$k:$v";
-	}
-	return join "\t", @r;
-}
 
 ####
 my %currstate;
@@ -79,10 +70,13 @@ while( my ($file, $state) = each %currstate ){
 	}
 }
 
-open F, '>', "$STATUSDIR/logstatus" or die;
+open F, '>', "$STATUSDIR/.logstatus" or die;
 foreach my $file ( sort {$a cmp $b} keys %currstate ){
 	my $state = $currstate{$file};
 	print F join("\t", $file, $state->{'size'}, $state->{'nr'}), "\n";
 }
 close F;
+
+rename "$STATUSDIR/.logstatus", "$STATUSDIR/logstatus" or die;
+exit 0;
 

@@ -27,14 +27,12 @@ sub read_mail_template ($) {
 
 ####
 sub post {
-	my @concat_attr = ('logname', 'eventname');
-
 	my $envelope_attr;
 	my $event_attr;
 	my $sender_addr;
 	my @recipient_addr;
 	my $template_param;
-	my @concat_messages;
+	my @group_by;
 	my @event;
 	while( <STDIN> ){
 		chomp;
@@ -49,8 +47,8 @@ sub post {
 				push @recipient_addr, [split m"\t", ${^POSTMATCH}];
 			}elsif( $1 eq 'template' ){
 				$template_param = ltsv2hash( ${^POSTMATCH} );
-			}elsif( $1 eq 'concat_messages' ){
-				@concat_messages = split m"\t", ${^POSTMATCH};
+			}elsif( $1 eq 'group_by' ){
+				@group_by = split m"\t", ${^POSTMATCH};
 			}
 		}elsif( m"^\t"p ){
 			# TODO: auto-detect charset and transcode
@@ -71,8 +69,8 @@ sub post {
 		my $attr = $e->[0];
 		my $message = $e->[1];
 		my @snippet_name;
-		foreach my $concat_attr ( @concat_messages ){
-			push @snippet_name, $attr->{$concat_attr};
+		foreach my $group_by ( @group_by ){
+			push @snippet_name, $attr->{$group_by};
 		}
 		my $snippet_name = join "\t", @snippet_name;
 		push @{$snippet{$snippet_name}}, $message;
@@ -85,7 +83,7 @@ sub post {
 		my @snippet_name = split m"\t", $snippet_name;
 		my %snippet_attr;
 		for( my $i = 0; $i <= $#snippet_name; $i++ ){
-			$snippet_attr{ $concat_messages[$i] } = $snippet_name[$i];
+			$snippet_attr{ $group_by[$i] } = $snippet_name[$i];
 		}
 		if( @$messages > $template_param->{'max_messages_in_snippet'} ){
 			splice @$messages, $template_param->{'max_messages_in_snippet'};
